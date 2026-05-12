@@ -103,6 +103,46 @@ def add_digit():
             
     supabase.table("app_config").upsert({"key": "state", "data": state}).execute()
     return jsonify({"status": "ok"})
+@app.route('/import-data-safely')
+def secret_import_safely():
+    try:
+        # 1. Đọc file result.txt từ project
+        file_path = os.path.join(os.path.dirname(__file__), 'result.txt')
+        if not os.path.exists(file_path):
+            return "❌ Không tìm thấy file result.txt"
 
+        with open(file_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+
+        # 2. Lấy tất cả số từ file thành một danh sách
+        file_digits = [int(d) for d in re.findall(r'\d+', content)]
+        file_count = len(file_digits)
+
+        if file_count == 0:
+            return "⚠️ File không có dữ liệu số."
+
+        # 3. Kiểm tra số lượng bản ghi hiện có trên Supabase
+        # .count('exact') giúp lấy tổng số dòng mà không cần tải dữ liệu về
+        res_count = supabase.table("results").select("*", count="exact").execute()
+        db_count = res_count.count if res_count.count is not None else 0
+
+        # 4. So sánh và xử lý
+        if db_count >= file_count:
+            return f"ℹ️ Không có gì mới. Database đã có {db_count} số, file có {file_count} số."
+
+        # 5. Chỉ lấy phần số mới (phần đuôi của file mà DB chưa có)
+        new_data = file_digits[db_count:]
+        rows_to_insert = [{"digit": d} for d in new_data]
+
+        # 6. Nạp phần mới vào Supabase
+        chunk_size = 500
+        for i in range(0, len(rows_to_insert), chunk_size):
+            chunk = rows_to_insert[i:i + chunk_size]
+            supabase.table("results").insert(chunk).execute()
+
+        return f"✅ Đã nạp thêm {len(rows_to_insert)} số mới. Tổng cộng DB hiện có: {db_count + len(rows_to_insert)} số."
+
+    except Exception as e:
+        return f"❌ Lỗi hệ thống: {str(e)}"
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
