@@ -73,6 +73,11 @@
                     <div id="history-list" class="d-flex flex-wrap"></div>
                 </div>
             </div>
+            <p class="text-muted">
+                Hệ thống đang tính toán trên: <span id="debug-count" class="fw-bold text-primary">0</span> kết quả mới
+                nhất.
+                Số cuối cùng nhận diện: <span id="debug-last" class="fw-bold text-success">-</span>
+            </p>
         </div>
     </div>
 
@@ -83,6 +88,9 @@
             const res = await fetch('/api/data');
             const data = await res.json();
 
+            // Hiển thị thông số kiểm tra (Debug)
+            document.getElementById('debug-count').innerText = data.debug_total_fetched;
+            document.getElementById('debug-last').innerText = data.debug_last_digit
             document.getElementById('pred-digit').innerText = data.prediction.digit;
             document.getElementById('pred-conf').innerText = data.prediction.confidence;
             document.getElementById('pred-method').innerText = data.prediction.method;

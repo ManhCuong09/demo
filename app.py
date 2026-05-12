@@ -91,7 +91,7 @@ def train_model(digits, lag=LAG):
     model = Pipeline(
         steps=[
             ("prep", preprocessor),
-            ("clf", LogisticRegression(max_iter=2000, solver="lbfgs")),
+            ("clf", LogisticRegression(max_iter=3000, solver="lbfgs")),
         ]
     )
     model.fit(x_train, y_train)
@@ -151,41 +151,46 @@ def home():
 
 @app.route('/api/data', methods=['GET'])
 def get_data():
-    # SỬA LỖI: Lấy tối đa 10,000 dòng để không bao giờ bị thiếu
-    # SỬA LỖI: Sắp xếp theo ID tăng dần để digits truyền vào AI đúng thứ tự thời gian
-    res_digits = supabase.table("results") \
-        .select("digit") \
-        .order("id", desc=False) \
-        .limit(10000) \
-        .execute()
-    
-    digits = [item['digit'] for item in res_digits.data]
-    
-    # Lấy trạng thái vòng cược
-    res_state = supabase.table("app_config").select("data").eq("key", "state").execute()
-    state = res_state.data[0]['data'] if res_state.data else {"current_round": 1, "stats": {"wins": 0, "busts": 0}}
+    try:
+        # 1. Lấy 2000 số MỚI NHẤT (ID cao nhất) từ Database
+        # Dùng desc=True để lấy 1310, 1309, 1308... trước
+        res = supabase.table("results") \
+            .select("digit") \
+            .order("id", desc=True) \
+            .limit(3000) \
+            .execute()
+        
+        if not res.data:
+            return jsonify({"digits": [], "prediction": {"digit": "-"}})
 
-    # Đưa TOÀN BỘ digits vào thuật toán gốc của bạn
-    prediction = predict_next_digit(digits, LAG)
-    
-    # Chuẩn bị thông tin Top 3 để hiện lên web
-    probs = prediction["probabilities"]
-    top3 = sorted([(i, float(p) * 100.0) for i, p in enumerate(probs)], key=lambda x: x[1], reverse=True)[:3]
-    top3_str = " | ".join(f"{d}: {p:.2f}%" for d, p in top3)
+        # 2. Quan trọng: res.data đang là [1310, 1309, 1308...]
+        # Ta phải đảo ngược nó lại thành [..., 1308, 1309, 1310] để AI học đúng trình tự
+        digits = [item['digit'] for item in reversed(res.data)]
+        
+        # 3. Lấy trạng thái vòng cược
+        res_state = supabase.table("app_config").select("data").eq("key", "state").execute()
+        state = res_state.data[0]['data'] if res_state.data else {"current_round": 1, "stats": {"wins": 0, "busts": 0}}
 
-    return jsonify({
-        "digits": digits[-80:], # Chỉ hiện 80 số cuối cho gọn giao diện
-        "total_count": len(digits), # Thêm thông tin tổng số để bạn kiểm tra
-        "prediction": {
-            "digit": prediction["digit"],
-            "confidence": round(float(np.max(probs)) * 100, 2),
-            "method": prediction["method"],
-            "top3": top3_str
-        },
-        "bet_info": get_round_info(state["current_round"]),
-        "stats": state["stats"]
-    })
-
+        # 4. Đưa TOÀN BỘ số đã lấy (tối đa 2000 số mới nhất) vào AI
+        prediction = predict_next_digit(digits, LAG)
+        probs = prediction["probabilities"]
+        
+        # 5. Trả về kèm thông tin kiểm tra để "mắt thấy tai nghe"
+        return jsonify({
+            "digits": digits[-80:],      # Chỉ hiện 80 số cuối trên giao diện
+            "debug_total_fetched": len(digits), # Số lượng thực tế AI đã nhận
+            "debug_last_digit": digits[-1],     # Số cuối cùng trong danh sách AI nhận
+            "prediction": {
+                "digit": prediction["digit"],
+                "confidence": round(float(np.max(probs)) * 100, 2),
+                "method": prediction["method"],
+                "top3": sorted([(i, float(p) * 100.0) for i, p in enumerate(probs)], key=lambda x: x[1], reverse=True)[:3]
+            },
+            "bet_info": get_round_info(state["current_round"]),
+            "stats": state["stats"]
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 @app.route('/api/add', methods=['POST'])
 def add_digit():
     val = int(request.json.get('digit'))
