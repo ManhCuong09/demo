@@ -1,0 +1,6 @@
+flask
+supabase
+python-dotenv
+numpy
+scikit-learn
+gunicorn

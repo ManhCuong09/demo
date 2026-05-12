@@ -1,0 +1,108 @@
+import os
+from flask import Flask, render_template, request, jsonify
+from supabase import create_client
+import numpy as np
+from sklearn.compose import ColumnTransformer
+from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder
+from dotenv import load_dotenv
+
+load_dotenv()
+
+app = Flask(__name__)
+
+# --- Cấu hình Supabase ---
+SUPABASE_URL = os.getenv("https://yyyecjqreclbljjbufwg.supabase.co")
+SUPABASE_KEY = os.getenv("sb_secret_HWdyUiiIfDBsISNZtY6_3g_ZRAuAqa6")
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# --- Logic hằng số ---
+LAG = 6
+BET_PLAN = [1.5, 1.5, 1.5, 1.5, 1.5, 2, 2, 2.5, 3, 3.5, 4, 4.5, 5.5, 6.5, 7.5, 8.5, 10, 11.5, 13.5, 16, 18.5, 21.5]
+
+# --- Các hàm logic từ code cũ của bạn ---
+def get_round_info(round_no):
+    round_no = max(1, min(round_no, len(BET_PLAN)))
+    bet = BET_PLAN[round_no - 1]
+    spent_before = sum(BET_PLAN[: round_no - 1])
+    return {
+        "round": round_no,
+        "bet": bet,
+        "profit": round(6 * bet - spent_before, 2),
+        "left": len(BET_PLAN) - round_no
+    }
+
+def train_and_predict(digits):
+    if len(digits) < LAG + 5:
+        # Fallback đơn giản nếu thiếu dữ liệu
+        counts = np.bincount(digits, minlength=10) if digits else np.ones(10)
+        probs = counts / counts.sum()
+        return int(np.argmax(probs)), float(np.max(probs)), "fallback_frequency"
+
+    x_train = [digits[i-LAG:i] for i in range(LAG, len(digits))]
+    y_train = digits[LAG:]
+    
+    preprocessor = ColumnTransformer([("lag", OneHotEncoder(categories=[list(range(10))]*LAG), list(range(LAG)))])
+    model = Pipeline([("prep", preprocessor), ("clf", LogisticRegression(max_iter=1000))])
+    
+    model.fit(x_train, y_train)
+    x_next = np.array([digits[-LAG:]])
+    probs = model.predict_proba(x_next)[0]
+    pred = int(model.classes_[np.argmax(probs)])
+    return pred, float(np.max(probs)), "logistic_regression_lag6"
+
+# --- API Routes ---
+
+@app.route('/')
+def home():
+    return render_template('index.html')
+
+@app.route('/api/data', methods=['GET'])
+def get_data():
+    # Lấy 100 số gần nhất từ Supabase
+    res_digits = supabase.table("results").select("digit").order("id", desc=True).limit(100).execute()
+    digits = [item['digit'] for item in reversed(res_digits.data)]
+    
+    # Lấy trạng thái (state)
+    res_state = supabase.table("app_config").select("data").eq("key", "state").execute()
+    state = res_state.data[0]['data'] if res_state.data else {"current_round": 1, "stats": {"wins": 0, "busts": 0}}
+
+    pred_digit, confidence, method = train_and_predict(digits)
+    
+    return jsonify({
+        "digits": digits,
+        "prediction": {"digit": pred_digit, "confidence": round(confidence * 100, 2), "method": method},
+        "bet_info": get_round_info(state["current_round"]),
+        "stats": state["stats"]
+    })
+
+@app.route('/api/add', methods=['POST'])
+def add_digit():
+    val = int(request.json.get('digit'))
+    # 1. Lưu số mới vào Supabase
+    supabase.table("results").insert({"digit": val}).execute()
+    
+    # 2. Xử lý logic vòng cược (state)
+    res_state = supabase.table("app_config").select("data").eq("key", "state").execute()
+    state = res_state.data[0]['data'] if res_state.data else {"current_round": 1, "stats": {"wins": 0, "busts": 0}}
+    
+    # Ở đây bạn cần logic so sánh với 'last_prediction' để biết thắng hay thua
+    # Để đơn giản, giả sử frontend gửi kèm kết quả dự đoán trước đó
+    last_pred = request.json.get('last_prediction')
+    
+    if last_pred is not None and val == int(last_pred):
+        state["stats"]["wins"] += 1
+        state["current_round"] = 1
+    else:
+        if state["current_round"] >= len(BET_PLAN):
+            state["stats"]["busts"] += 1
+            state["current_round"] = 1
+        else:
+            state["current_round"] += 1
+            
+    supabase.table("app_config").upsert({"key": "state", "data": state}).execute()
+    return jsonify({"status": "ok"})
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)

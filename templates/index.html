@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="vi">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dự Đoán Số X7</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body {
+            background-color: #f8f9fa;
+        }
+
+        .pred-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .digit-badge {
+            width: 35px;
+            height: 35px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            margin: 2px;
+            border-radius: 50%;
+            background: #dee2e6;
+            font-weight: bold;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container py-4">
+        <h2 class="text-center mb-4">Dự Đoán Chu Kỳ x7</h2>
+
+        <div class="row g-3">
+            <!-- Card Dự đoán -->
+            <div class="col-md-6">
+                <div class="card pred-card shadow-sm p-4 text-center">
+                    <h5 class="opacity-75">Số dự đoán tiếp theo</h5>
+                    <div class="display-1 fw-bold" id="pred-digit">-</div>
+                    <p>Độ tin cậy: <span id="pred-conf">0</span>%</p>
+                    <small id="pred-method" class="opacity-50"></small>
+                </div>
+            </div>
+
+            <!-- Card Vòng cược -->
+            <div class="col-md-6">
+                <div class="card shadow-sm p-4">
+                    <h5>Thông tin vòng cược</h5>
+                    <div class="d-flex justify-content-between">
+                        <span>Vòng hiện tại:</span> <strong id="round-no">1</strong>
+                    </div>
+                    <div class="d-flex justify-content-between">
+                        <span>Nên đặt:</span> <strong class="text-danger"><span id="bet-amt">0</span> táo</strong>
+                    </div>
+                    <div class="d-flex justify-content-between">
+                        <span>Lãi nếu thắng:</span> <strong class="text-success" id="profit-amt">0</strong>
+                    </div>
+                    <hr>
+                    <div class="input-group">
+                        <input type="number" id="actual-digit" class="form-control" placeholder="Nhập số thực tế (0-9)">
+                        <button class="btn btn-primary" onclick="submitResult()">Ghi kết quả</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Lịch sử -->
+            <div class="col-12">
+                <div class="card shadow-sm p-3">
+                    <h5>100 số gần nhất</h5>
+                    <div id="history-list" class="d-flex flex-wrap"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let lastPrediction = null;
+
+        async function refreshData() {
+            const res = await fetch('/api/data');
+            const data = await res.json();
+
+            document.getElementById('pred-digit').innerText = data.prediction.digit;
+            document.getElementById('pred-conf').innerText = data.prediction.confidence;
+            document.getElementById('pred-method').innerText = data.prediction.method;
+            document.getElementById('round-no').innerText = data.bet_info.round;
+            document.getElementById('bet-amt').innerText = data.bet_info.bet;
+            document.getElementById('profit-amt').innerText = data.bet_info.profit;
+
+            lastPrediction = data.prediction.digit;
+
+            const historyDiv = document.getElementById('history-list');
+            historyDiv.innerHTML = data.digits.map(d => `<div class="digit-badge">${d}</div>`).join('');
+        }
+
+        async function submitResult() {
+            const digit = document.getElementById('actual-digit').value;
+            if (digit === "" || digit < 0 || digit > 9) return alert("Nhập số 0-9");
+
+            await fetch('/api/add', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ digit, last_prediction: lastPrediction })
+            });
+
+            document.getElementById('actual-digit').value = "";
+            refreshData();
+        }
+
+        refreshData();
+    </script>
+</body>
+
+</html>
