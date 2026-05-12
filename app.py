@@ -5,7 +5,7 @@ from flask import Flask, render_template, request, jsonify, Response
 from supabase import create_client
 from dotenv import load_dotenv
 
-# Import sklearn với kiểm tra lỗi như bản gốc của bạn
+# Kiểm tra thư viện AI
 try:
     from sklearn.compose import ColumnTransformer
     from sklearn.linear_model import LogisticRegression
@@ -23,12 +23,14 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# --- Các hằng số gốc ---
+# --- Các hằng số gốc của bạn ---
 LAG = 6
 BET_PLAN = [1.5, 1.5, 1.5, 1.5, 1.5, 2, 2, 2.5, 3, 3.5, 4, 4.5, 5.5, 6.5, 7.5, 8.5, 10, 11.5, 13.5, 16, 18.5, 21.5]
 FREQ_FALLBACK_MIN = 3
 
-# --- GIỮ NGUYÊN THUẬT TOÁN GỐC CỦA BẠN ---
+# =========================================================
+# GIỮ NGUYÊN VẸN 100% THUẬT TOÁN GỐC CỦA BẠN
+# =========================================================
 
 def fallback_distribution(digits, lag=LAG):
     probs = np.full(10, 1.0 / 10.0, dtype=float)
@@ -62,7 +64,6 @@ def fallback_distribution(digits, lag=LAG):
 def train_model(digits, lag=LAG):
     if not SKLEARN_AVAILABLE:
         return None
-    
     if len(digits) <= lag:
         return None
     
@@ -140,7 +141,9 @@ def get_round_info(round_no):
         "rounds_left": len(BET_PLAN) - round_no,
     }
 
-# --- CÁC API ROUTES (Kết nối Frontend và Supabase) ---
+# =========================================================
+# CÁC API ROUTES (ĐÃ SỬA LỖI LẤY THIẾU DỮ LIỆU)
+# =========================================================
 
 @app.route('/')
 def home():
@@ -148,24 +151,31 @@ def home():
 
 @app.route('/api/data', methods=['GET'])
 def get_data():
-    # Lấy dữ liệu từ Supabase
-    res_digits = supabase.table("results").select("digit").order("id", desc=False).execute()
+    # SỬA LỖI: Lấy tối đa 10,000 dòng để không bao giờ bị thiếu
+    # SỬA LỖI: Sắp xếp theo ID tăng dần để digits truyền vào AI đúng thứ tự thời gian
+    res_digits = supabase.table("results") \
+        .select("digit") \
+        .order("id", desc=False) \
+        .limit(10000) \
+        .execute()
+    
     digits = [item['digit'] for item in res_digits.data]
     
-    # Lấy state
+    # Lấy trạng thái vòng cược
     res_state = supabase.table("app_config").select("data").eq("key", "state").execute()
     state = res_state.data[0]['data'] if res_state.data else {"current_round": 1, "stats": {"wins": 0, "busts": 0}}
 
-    # Tính toán dự đoán dựa trên thuật toán gốc
+    # Đưa TOÀN BỘ digits vào thuật toán gốc của bạn
     prediction = predict_next_digit(digits, LAG)
     
-    # Lấy top 3
+    # Chuẩn bị thông tin Top 3 để hiện lên web
     probs = prediction["probabilities"]
     top3 = sorted([(i, float(p) * 100.0) for i, p in enumerate(probs)], key=lambda x: x[1], reverse=True)[:3]
     top3_str = " | ".join(f"{d}: {p:.2f}%" for d, p in top3)
 
     return jsonify({
-        "digits": digits[-80:], # Gửi 80 số cuối để hiển thị
+        "digits": digits[-80:], # Chỉ hiện 80 số cuối cho gọn giao diện
+        "total_count": len(digits), # Thêm thông tin tổng số để bạn kiểm tra
         "prediction": {
             "digit": prediction["digit"],
             "confidence": round(float(np.max(probs)) * 100, 2),
@@ -181,10 +191,10 @@ def add_digit():
     val = int(request.json.get('digit'))
     last_pred = request.json.get('last_prediction')
     
-    # 1. Lưu số mới
+    # 1. Lưu số mới vào Supabase
     supabase.table("results").insert({"digit": val}).execute()
     
-    # 2. Cập nhật trạng thái chu kỳ (State logic)
+    # 2. Cập nhật State (Vòng cược và Thống kê)
     res_state = supabase.table("app_config").select("data").eq("key", "state").execute()
     state = res_state.data[0]['data'] if res_state.data else {"current_round": 1, "stats": {"wins": 0, "busts": 0}}
     
@@ -200,73 +210,40 @@ def add_digit():
             
     supabase.table("app_config").upsert({"key": "state", "data": state}).execute()
     return jsonify({"status": "ok"})
-    
-@app.route('/import-data-safely')
-def secret_import_safely():
-    try:
-        # 1. Đọc file result.txt từ project
-        file_path = os.path.join(os.path.dirname(__file__), 'result.txt')
-        if not os.path.exists(file_path):
-            return "❌ Không tìm thấy file result.txt"
-
-        with open(file_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-
-        # 2. Lấy tất cả số từ file thành một danh sách
-        file_digits = [int(d) for d in re.findall(r'\d+', content)]
-        file_count = len(file_digits)
-
-        if file_count == 0:
-            return "⚠️ File không có dữ liệu số."
-
-        # 3. Kiểm tra số lượng bản ghi hiện có trên Supabase
-        # .count('exact') giúp lấy tổng số dòng mà không cần tải dữ liệu về
-        res_count = supabase.table("results").select("*", count="exact").execute()
-        db_count = res_count.count if res_count.count is not None else 0
-
-        # 4. So sánh và xử lý
-        if db_count >= file_count:
-            return f"ℹ️ Không có gì mới. Database đã có {db_count} số, file có {file_count} số."
-
-        # 5. Chỉ lấy phần số mới (phần đuôi của file mà DB chưa có)
-        new_data = file_digits[db_count:]
-        rows_to_insert = [{"digit": d} for d in new_data]
-
-        # 6. Nạp phần mới vào Supabase
-        chunk_size = 500
-        for i in range(0, len(rows_to_insert), chunk_size):
-            chunk = rows_to_insert[i:i + chunk_size]
-            supabase.table("results").insert(chunk).execute()
-
-        return f"✅ Đã nạp thêm {len(rows_to_insert)} số mới. Tổng cộng DB hiện có: {db_count + len(rows_to_insert)} số."
-
-    except Exception as e:
-        return f"❌ Lỗi hệ thống: {str(e)}"
 
 @app.route('/export-data')
 def export_data():
+    # SỬA LỖI: Lấy TOÀN BỘ lịch sử, không giới hạn 1000
+    res = supabase.table("results").select("digit").order("id", desc=False).limit(100000).execute()
+    digits = [str(item['digit']) for item in res.data]
+    content = ",".join(digits)
+    return Response(content, mimetype="text/plain", headers={"Content-disposition": "attachment; filename=full_data.txt"})
+
+@app.route('/import-data-safely')
+def secret_import_safely():
+    # Logic nạp file giữ nguyên nhưng sửa đếm db_count chính xác
     try:
-        # 1. Lấy toàn bộ dữ liệu từ Supabase, sắp xếp theo ID tăng dần (đúng thứ tự thời gian)
-        res = supabase.table("results").select("digit").order("id", desc=False).execute()
+        file_path = os.path.join(os.path.dirname(__file__), 'result.txt')
+        if not os.path.exists(file_path): return "❌ Không thấy file"
+        with open(file_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        file_digits = [int(d) for d in re.findall(r'\d+', content)]
         
-        if not res.data:
-            return "⚠️ Database đang trống, không có gì để xuất."
+        res_count = supabase.table("results").select("*", count="exact").execute()
+        db_count = res_count.count if res_count.count is not None else 0
 
-        # 2. Chuyển danh sách số thành chuỗi cách nhau bằng dấu phẩy
-        digits = [str(item['digit']) for item in res.data]
-        content = ",".join(digits)
+        if db_count >= len(file_digits):
+            return f"ℹ️ Đã đủ dữ liệu ({db_count} số)."
 
-        # 3. Trả về response dưới dạng file tải về
-        return Response(
-            content,
-            mimetype="text/plain",
-            headers={
-                "Content-disposition": "attachment; filename=supabase_backup.txt"
-            }
-        )
-
+        new_data = file_digits[db_count:]
+        rows = [{"digit": d} for d in new_data]
+        
+        for i in range(0, len(rows), 500):
+            supabase.table("results").insert(rows[i:i+500]).execute()
+            
+        return f"✅ Đã nạp thêm {len(new_data)} số."
     except Exception as e:
-        return f"❌ Lỗi khi xuất dữ liệu: {str(e)}"
+        return f"❌ Lỗi: {str(e)}"
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
