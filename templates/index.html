@@ -86,12 +86,17 @@
             document.getElementById('pred-digit').innerText = data.prediction.digit;
             document.getElementById('pred-conf').innerText = data.prediction.confidence;
             document.getElementById('pred-method').innerText = data.prediction.method;
+
+            // Hiển thị thêm Top 3 nếu muốn (Bạn có thể thêm 1 thẻ div có id="top3" vào HTML)
+            if (document.getElementById('top3')) {
+                document.getElementById('top3').innerText = data.prediction.top3;
+            }
+
             document.getElementById('round-no').innerText = data.bet_info.round;
             document.getElementById('bet-amt').innerText = data.bet_info.bet;
-            document.getElementById('profit-amt').innerText = data.bet_info.profit;
+            document.getElementById('profit-amt').innerText = data.bet_info.net_profit_if_win; // Khớp với tên biến mới
 
             lastPrediction = data.prediction.digit;
-
             const historyDiv = document.getElementById('history-list');
             historyDiv.innerHTML = data.digits.map(d => `<div class="digit-badge">${d}</div>`).join('');
         }

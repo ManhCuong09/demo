@@ -1,16 +1,21 @@
 import os
-from flask import Flask, render_template, request, jsonify
-from supabase import create_client
-import numpy as np
-from sklearn.compose import ColumnTransformer
-from sklearn.linear_model import LogisticRegression
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder
-from dotenv import load_dotenv
 import re
+import numpy as np
+from flask import Flask, render_template, request, jsonify, Response
+from supabase import create_client
+from dotenv import load_dotenv
+
+# Import sklearn với kiểm tra lỗi như bản gốc của bạn
+try:
+    from sklearn.compose import ColumnTransformer
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.pipeline import Pipeline
+    from sklearn.preprocessing import OneHotEncoder
+    SKLEARN_AVAILABLE = True
+except Exception:
+    SKLEARN_AVAILABLE = False
 
 load_dotenv()
-
 app = Flask(__name__)
 
 # --- Cấu hình Supabase ---
@@ -18,77 +23,124 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# --- Logic hằng số ---
+# --- Các hằng số gốc ---
 LAG = 6
 BET_PLAN = [1.5, 1.5, 1.5, 1.5, 1.5, 2, 2, 2.5, 3, 3.5, 4, 4.5, 5.5, 6.5, 7.5, 8.5, 10, 11.5, 13.5, 16, 18.5, 21.5]
+FREQ_FALLBACK_MIN = 3
 
-# --- Các hàm logic từ code cũ của bạn ---
+# --- GIỮ NGUYÊN THUẬT TOÁN GỐC CỦA BẠN ---
+
+def fallback_distribution(digits, lag=LAG):
+    probs = np.full(10, 1.0 / 10.0, dtype=float)
+    if not digits:
+        return probs
+
+    total_weight = 0.0
+    weighted = np.zeros(10, dtype=float)
+    max_k = min(lag, len(digits) - 1)
+    
+    for k in range(max_k, 0, -1):
+        suffix = digits[-k:]
+        next_counts = np.zeros(10, dtype=float)
+        matches = 0
+        for i in range(k, len(digits)):
+            if digits[i - k:i] == suffix:
+                next_counts[digits[i]] += 1
+                matches += 1
+        if matches >= FREQ_FALLBACK_MIN:
+            weight = float(k)
+            weighted += weight * (next_counts / next_counts.sum())
+            total_weight += weight
+
+    if total_weight > 0:
+        probs = weighted / total_weight
+    else:
+        counts = np.bincount(np.array(digits, dtype=int), minlength=10).astype(float)
+        probs = counts / counts.sum()
+    return probs
+
+def train_model(digits, lag=LAG):
+    if not SKLEARN_AVAILABLE:
+        return None
+    
+    if len(digits) <= lag:
+        return None
+    
+    x_rows = []
+    y_rows = []
+    for i in range(lag, len(digits)):
+        x_rows.append(digits[i - lag:i])
+        y_rows.append(digits[i])
+    
+    x_train, y_train = np.array(x_rows, dtype=int), np.array(y_rows, dtype=int)
+    
+    if len(x_train) < 20:
+        return None
+
+    preprocessor = ColumnTransformer(
+        transformers=[
+            (
+                "lag_digits",
+                OneHotEncoder(categories=[list(range(10)) for _ in range(lag)], handle_unknown="ignore"),
+                list(range(lag)),
+            )
+        ]
+    )
+
+    model = Pipeline(
+        steps=[
+            ("prep", preprocessor),
+            ("clf", LogisticRegression(max_iter=2000, solver="lbfgs")),
+        ]
+    )
+    model.fit(x_train, y_train)
+    return model
+
+def predict_next_digit(digits, lag=LAG):
+    if not digits:
+        return {"digit": 0, "probabilities": np.full(10, 0.1), "method": "fallback_uniform"}
+
+    if len(digits) < lag + 5:
+        probs = fallback_distribution(digits, lag)
+        return {"digit": int(np.argmax(probs)), "probabilities": probs, "method": "fallback_backoff"}
+
+    model = train_model(digits, lag)
+    if model is None:
+        probs = fallback_distribution(digits, lag)
+        return {"digit": int(np.argmax(probs)), "probabilities": probs, "method": "fallback_backoff"}
+
+    x_next = np.array([digits[-lag:]], dtype=int)
+    probs_raw = model.predict_proba(x_next)[0]
+    
+    full_probs = np.zeros(10, dtype=float)
+    for idx, cls in enumerate(model.classes_):
+        full_probs[int(cls)] = float(probs_raw[idx])
+    
+    if full_probs.sum() > 0:
+        full_probs /= full_probs.sum()
+
+    return {
+        "digit": int(model.classes_[np.argmax(probs_raw)]),
+        "probabilities": full_probs,
+        "method": "logistic_regression_lag6",
+    }
+
 def get_round_info(round_no):
     round_no = max(1, min(round_no, len(BET_PLAN)))
     bet = BET_PLAN[round_no - 1]
     spent_before = sum(BET_PLAN[: round_no - 1])
+    spent_after = sum(BET_PLAN[:round_no])
+    net_profit_if_win = 6 * bet - spent_before
     return {
         "round": round_no,
         "bet": bet,
-        "profit": round(6 * bet - spent_before, 2),
-        "left": len(BET_PLAN) - round_no
+        "spent_before": spent_before,
+        "spent_after": spent_after,
+        "net_profit_if_win": net_profit_if_win,
+        "rounds_left": len(BET_PLAN) - round_no,
     }
 
-def train_and_predict(digits):
-    # 1. Đảm bảo dữ liệu đầu vào là mảng Numpy kiểu số nguyên
-    digits = np.array(digits, dtype=int)
-    
-    # 2. Kiểm tra độ dài dữ liệu (Cần tối thiểu LAG + 1 số để có ít nhất 1 mẫu training)
-    if len(digits) < LAG + 5:
-        # Fallback: Tính xác suất dựa trên tần suất xuất hiện
-        counts = np.bincount(digits, minlength=10) if len(digits) > 0 else np.ones(10)
-        probs = counts / counts.sum()
-        pred = int(np.argmax(probs))
-        return pred, float(probs[pred]), "fallback_frequency"
-
-    try:
-        # 3. Chuẩn bị dữ liệu training với kiểu int chuẩn
-        x_train = np.array([digits[i-LAG:i] for i in range(LAG, len(digits))], dtype=int)
-        y_train = np.array(digits[LAG:], dtype=int)
-        
-        # 4. Định nghĩa Encoder với handle_unknown='ignore' để tránh lỗi dữ liệu lạ
-        encoder = OneHotEncoder(
-            categories=[list(range(10))] * LAG, 
-            handle_unknown='ignore',
-            sparse_output=False # Thêm cái này để tương thích tốt hơn với các bản sklearn mới
-        )
-        
-        preprocessor = ColumnTransformer([
-            ("lag", encoder, list(range(LAG)))
-        ])
-        
-        model = Pipeline([
-            ("prep", preprocessor), 
-            ("clf", LogisticRegression(max_iter=1000, solver='lbfgs'))
-        ])
-        
-        # 5. Huấn luyện
-        model.fit(x_train, y_train)
-        
-        # 6. Dự đoán số tiếp theo
-        x_next = np.array([digits[-LAG:]], dtype=int)
-        probs = model.predict_proba(x_next)[0]
-        
-        # Tìm class có xác suất cao nhất
-        best_idx = np.argmax(probs)
-        pred = int(model.classes_[best_idx])
-        confidence = float(probs[best_idx])
-        
-        return pred, confidence, "logistic_regression_lag6"
-        
-    except Exception as e:
-        print(f"Lỗi khi training: {e}")
-        # Nếu AI lỗi, quay về dùng tần suất để web không bị sập (500)
-        counts = np.bincount(digits, minlength=10)
-        probs = counts / counts.sum()
-        pred = int(np.argmax(probs))
-        return pred, float(probs[pred]), "fallback_error_recovery"
-# --- API Routes ---
+# --- CÁC API ROUTES (Kết nối Frontend và Supabase) ---
 
 @app.route('/')
 def home():
@@ -96,19 +148,30 @@ def home():
 
 @app.route('/api/data', methods=['GET'])
 def get_data():
-    # Lấy 100 số gần nhất từ Supabase
-    res_digits = supabase.table("results").select("digit").order("id", desc=True).limit(100).execute()
-    digits = [item['digit'] for item in reversed(res_digits.data)]
+    # Lấy dữ liệu từ Supabase
+    res_digits = supabase.table("results").select("digit").order("id", desc=False).execute()
+    digits = [item['digit'] for item in res_digits.data]
     
-    # Lấy trạng thái (state)
+    # Lấy state
     res_state = supabase.table("app_config").select("data").eq("key", "state").execute()
     state = res_state.data[0]['data'] if res_state.data else {"current_round": 1, "stats": {"wins": 0, "busts": 0}}
 
-    pred_digit, confidence, method = train_and_predict(digits)
+    # Tính toán dự đoán dựa trên thuật toán gốc
+    prediction = predict_next_digit(digits, LAG)
     
+    # Lấy top 3
+    probs = prediction["probabilities"]
+    top3 = sorted([(i, float(p) * 100.0) for i, p in enumerate(probs)], key=lambda x: x[1], reverse=True)[:3]
+    top3_str = " | ".join(f"{d}: {p:.2f}%" for d, p in top3)
+
     return jsonify({
-        "digits": digits,
-        "prediction": {"digit": pred_digit, "confidence": round(confidence * 100, 2), "method": method},
+        "digits": digits[-80:], # Gửi 80 số cuối để hiển thị
+        "prediction": {
+            "digit": prediction["digit"],
+            "confidence": round(float(np.max(probs)) * 100, 2),
+            "method": prediction["method"],
+            "top3": top3_str
+        },
         "bet_info": get_round_info(state["current_round"]),
         "stats": state["stats"]
     })
@@ -116,29 +179,28 @@ def get_data():
 @app.route('/api/add', methods=['POST'])
 def add_digit():
     val = int(request.json.get('digit'))
-    # 1. Lưu số mới vào Supabase
+    last_pred = request.json.get('last_prediction')
+    
+    # 1. Lưu số mới
     supabase.table("results").insert({"digit": val}).execute()
     
-    # 2. Xử lý logic vòng cược (state)
+    # 2. Cập nhật trạng thái chu kỳ (State logic)
     res_state = supabase.table("app_config").select("data").eq("key", "state").execute()
     state = res_state.data[0]['data'] if res_state.data else {"current_round": 1, "stats": {"wins": 0, "busts": 0}}
     
-    # Ở đây bạn cần logic so sánh với 'last_prediction' để biết thắng hay thua
-    # Để đơn giản, giả sử frontend gửi kèm kết quả dự đoán trước đó
-    last_pred = request.json.get('last_prediction')
-    
     if last_pred is not None and val == int(last_pred):
-        state["stats"]["wins"] += 1
+        state["stats"]["wins"] = state["stats"].get("wins", 0) + 1
         state["current_round"] = 1
     else:
         if state["current_round"] >= len(BET_PLAN):
-            state["stats"]["busts"] += 1
+            state["stats"]["busts"] = state["stats"].get("busts", 0) + 1
             state["current_round"] = 1
         else:
             state["current_round"] += 1
             
     supabase.table("app_config").upsert({"key": "state", "data": state}).execute()
     return jsonify({"status": "ok"})
+    
 @app.route('/import-data-safely')
 def secret_import_safely():
     try:
