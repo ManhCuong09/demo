@@ -35,24 +35,59 @@ def get_round_info(round_no):
     }
 
 def train_and_predict(digits):
+    # 1. Đảm bảo dữ liệu đầu vào là mảng Numpy kiểu số nguyên
+    digits = np.array(digits, dtype=int)
+    
+    # 2. Kiểm tra độ dài dữ liệu (Cần tối thiểu LAG + 1 số để có ít nhất 1 mẫu training)
     if len(digits) < LAG + 5:
-        # Fallback đơn giản nếu thiếu dữ liệu
-        counts = np.bincount(digits, minlength=10) if digits else np.ones(10)
+        # Fallback: Tính xác suất dựa trên tần suất xuất hiện
+        counts = np.bincount(digits, minlength=10) if len(digits) > 0 else np.ones(10)
         probs = counts / counts.sum()
-        return int(np.argmax(probs)), float(np.max(probs)), "fallback_frequency"
+        pred = int(np.argmax(probs))
+        return pred, float(probs[pred]), "fallback_frequency"
 
-    x_train = [digits[i-LAG:i] for i in range(LAG, len(digits))]
-    y_train = digits[LAG:]
-    
-    preprocessor = ColumnTransformer([("lag", OneHotEncoder(categories=[list(range(10))]*LAG), list(range(LAG)))])
-    model = Pipeline([("prep", preprocessor), ("clf", LogisticRegression(max_iter=1000))])
-    
-    model.fit(x_train, y_train)
-    x_next = np.array([digits[-LAG:]])
-    probs = model.predict_proba(x_next)[0]
-    pred = int(model.classes_[np.argmax(probs)])
-    return pred, float(np.max(probs)), "logistic_regression_lag6"
-
+    try:
+        # 3. Chuẩn bị dữ liệu training với kiểu int chuẩn
+        x_train = np.array([digits[i-LAG:i] for i in range(LAG, len(digits))], dtype=int)
+        y_train = np.array(digits[LAG:], dtype=int)
+        
+        # 4. Định nghĩa Encoder với handle_unknown='ignore' để tránh lỗi dữ liệu lạ
+        encoder = OneHotEncoder(
+            categories=[list(range(10))] * LAG, 
+            handle_unknown='ignore',
+            sparse_output=False # Thêm cái này để tương thích tốt hơn với các bản sklearn mới
+        )
+        
+        preprocessor = ColumnTransformer([
+            ("lag", encoder, list(range(LAG)))
+        ])
+        
+        model = Pipeline([
+            ("prep", preprocessor), 
+            ("clf", LogisticRegression(max_iter=1000, solver='lbfgs'))
+        ])
+        
+        # 5. Huấn luyện
+        model.fit(x_train, y_train)
+        
+        # 6. Dự đoán số tiếp theo
+        x_next = np.array([digits[-LAG:]], dtype=int)
+        probs = model.predict_proba(x_next)[0]
+        
+        # Tìm class có xác suất cao nhất
+        best_idx = np.argmax(probs)
+        pred = int(model.classes_[best_idx])
+        confidence = float(probs[best_idx])
+        
+        return pred, confidence, "logistic_regression_lag6"
+        
+    except Exception as e:
+        print(f"Lỗi khi training: {e}")
+        # Nếu AI lỗi, quay về dùng tần suất để web không bị sập (500)
+        counts = np.bincount(digits, minlength=10)
+        probs = counts / counts.sum()
+        pred = int(np.argmax(probs))
+        return pred, float(probs[pred]), "fallback_error_recovery"
 # --- API Routes ---
 
 @app.route('/')
