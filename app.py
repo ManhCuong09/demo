@@ -13,8 +13,8 @@ load_dotenv()
 app = Flask(__name__)
 
 # --- Cấu hình Supabase ---
-SUPABASE_URL = os.getenv("https://yyyecjqreclbljjbufwg.supabase.co")
-SUPABASE_KEY = os.getenv("sb_secret_HWdyUiiIfDBsISNZtY6_3g_ZRAuAqa6")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # --- Logic hằng số ---
