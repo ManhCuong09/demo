@@ -144,5 +144,31 @@ def secret_import_safely():
 
     except Exception as e:
         return f"❌ Lỗi hệ thống: {str(e)}"
+
+@app.route('/export-data')
+def export_data():
+    try:
+        # 1. Lấy toàn bộ dữ liệu từ Supabase, sắp xếp theo ID tăng dần (đúng thứ tự thời gian)
+        res = supabase.table("results").select("digit").order("id", desc=False).execute()
+        
+        if not res.data:
+            return "⚠️ Database đang trống, không có gì để xuất."
+
+        # 2. Chuyển danh sách số thành chuỗi cách nhau bằng dấu phẩy
+        digits = [str(item['digit']) for item in res.data]
+        content = ",".join(digits)
+
+        # 3. Trả về response dưới dạng file tải về
+        return Response(
+            content,
+            mimetype="text/plain",
+            headers={
+                "Content-disposition": "attachment; filename=supabase_backup.txt"
+            }
+        )
+
+    except Exception as e:
+        return f"❌ Lỗi khi xuất dữ liệu: {str(e)}"
+        
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
