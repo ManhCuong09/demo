@@ -7,6 +7,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 from dotenv import load_dotenv
+import re
 
 load_dotenv()
 
@@ -169,6 +170,6 @@ def export_data():
 
     except Exception as e:
         return f"❌ Lỗi khi xuất dữ liệu: {str(e)}"
-        
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
