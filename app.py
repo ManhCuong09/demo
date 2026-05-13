@@ -152,45 +152,55 @@ def home():
 @app.route('/api/data', methods=['GET'])
 def get_data():
     try:
-        # 1. Lấy 2000 số MỚI NHẤT (ID cao nhất) từ Database
-        # Dùng desc=True để lấy 1310, 1309, 1308... trước
+        # 1. Lấy 2000 số MỚI NHẤT, ép buộc sắp xếp theo ID giảm dần
+        # Điều này đảm bảo ta luôn lấy được từ số 1310, 1309 lùi xuống
         res = supabase.table("results") \
-            .select("digit") \
+            .select("id, digit") \
             .order("id", desc=True) \
-            .limit(3000) \
+            .limit(2000) \
             .execute()
         
         if not res.data:
-            return jsonify({"digits": [], "prediction": {"digit": "-"}})
+            return jsonify({"error": "No data"}), 200
 
-        # 2. Quan trọng: res.data đang là [1310, 1309, 1308...]
-        # Ta phải đảo ngược nó lại thành [..., 1308, 1309, 1310] để AI học đúng trình tự
-        digits = [item['digit'] for item in reversed(res.data)]
+        # 2. Đảo ngược mảng để digits có thứ tự: [Số cũ -> Số mới nhất]
+        # AI và thuật toán Backoff của bạn cần thứ tự này để tìm suffix
+        raw_data = res.data
+        digits = [item['digit'] for item in reversed(raw_data)]
         
-        # 3. Lấy trạng thái vòng cược
-        res_state = supabase.table("app_config").select("data").eq("key", "state").execute()
-        state = res_state.data[0]['data'] if res_state.data else {"current_round": 1, "stats": {"wins": 0, "busts": 0}}
+        # 3. Chẩn đoán nhanh: Kiểm tra xem số cuối cùng có khớp với DB không
+        last_id_fetched = raw_data[0]['id']
+        last_digit_fetched = raw_data[0]['digit']
 
-        # 4. Đưa TOÀN BỘ số đã lấy (tối đa 2000 số mới nhất) vào AI
+        # 4. Đưa vào thuật toán gốc của bạn
         prediction = predict_next_digit(digits, LAG)
         probs = prediction["probabilities"]
-        
-        # 5. Trả về kèm thông tin kiểm tra để "mắt thấy tai nghe"
+        top3 = sorted([(i, float(p) * 100.0) for i, p in enumerate(probs)], 
+                      key=lambda x: x[1], reverse=True)[:3]
+
+        # 5. Lấy trạng thái vòng cược
+        res_state = supabase.table("app_config").select("data").eq("key", "state").execute()
+        state = res_state.data[0]['data'] if res_state.data else {"current_round": 1, "stats": {}}
+
         return jsonify({
-            "digits": digits[-80:],      # Chỉ hiện 80 số cuối trên giao diện
-            "debug_total_fetched": len(digits), # Số lượng thực tế AI đã nhận
-            "debug_last_digit": digits[-1],     # Số cuối cùng trong danh sách AI nhận
+            "digits": digits[-80:], # Chỉ hiện 80 số cuối cho đẹp
+            "debug": {
+                "total_used": len(digits),
+                "last_id": last_id_fetched,
+                "last_digit": last_digit_fetched
+            },
             "prediction": {
                 "digit": prediction["digit"],
                 "confidence": round(float(np.max(probs)) * 100, 2),
                 "method": prediction["method"],
-                "top3": sorted([(i, float(p) * 100.0) for i, p in enumerate(probs)], key=lambda x: x[1], reverse=True)[:3]
+                "top3": " | ".join(f"{d}: {p:.2f}%" for d, p in top3)
             },
-            "bet_info": get_round_info(state["current_round"]),
-            "stats": state["stats"]
+            "bet_info": get_round_info(state.get("current_round", 1)),
+            "stats": state.get("stats", {"wins": 0, "busts": 0})
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+        
 @app.route('/api/add', methods=['POST'])
 def add_digit():
     val = int(request.json.get('digit'))
