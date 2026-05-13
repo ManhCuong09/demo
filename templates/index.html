@@ -78,6 +78,18 @@
                 nhất.
                 Số cuối cùng nhận diện: <span id="debug-last" class="fw-bold text-success">-</span>
             </p>
+            <!-- Card Dự đoán -->
+            <div class="col-md-6">
+                <div class="card pred-card shadow-sm p-4 text-center">
+                    <h5 class="opacity-75">Số dự đoán tiếp theo</h5>
+                    <div class="display-1 fw-bold" id="pred-digit">-</div>
+                    <p class="mb-1">Độ tin cậy: <span id="pred-conf">0</span>%</p>
+                    <!-- Thêm dòng này để hiện Top 3 -->
+                    <div id="top3" class="badge bg-light text-dark mb-2" style="font-size: 0.9rem;"></div>
+                    <br>
+                    <small id="pred-method" class="opacity-50"></small>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -88,21 +100,24 @@
             const res = await fetch('/api/data');
             const data = await res.json();
 
-            // Hiển thị thông số kiểm tra (Debug)
-            document.getElementById('debug-count').innerText = data.debug_total_fetched;
-            document.getElementById('debug-last').innerText = data.debug_last_digit
+            // SỬA TẠI ĐÂY: Truy cập vào bên trong object 'debug'
+            if (data.debug) {
+                document.getElementById('debug-count').innerText = data.debug.total_used;
+                document.getElementById('debug-last').innerText = data.debug.last_digit;
+            }
+
             document.getElementById('pred-digit').innerText = data.prediction.digit;
             document.getElementById('pred-conf').innerText = data.prediction.confidence;
             document.getElementById('pred-method').innerText = data.prediction.method;
 
-            // Hiển thị thêm Top 3 nếu muốn (Bạn có thể thêm 1 thẻ div có id="top3" vào HTML)
-            if (document.getElementById('top3')) {
+            // Hiển thị Top 3 nếu bạn có thêm thẻ <div id="top3">
+            if (document.getElementById('top3') && data.prediction.top3) {
                 document.getElementById('top3').innerText = data.prediction.top3;
             }
 
             document.getElementById('round-no').innerText = data.bet_info.round;
             document.getElementById('bet-amt').innerText = data.bet_info.bet;
-            document.getElementById('profit-amt').innerText = data.bet_info.net_profit_if_win; // Khớp với tên biến mới
+            document.getElementById('profit-amt').innerText = data.bet_info.net_profit_if_win;
 
             lastPrediction = data.prediction.digit;
             const historyDiv = document.getElementById('history-list');
